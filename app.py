@@ -18,43 +18,30 @@ gesture_sibi = {
     "10": "SEPULUH"
 }
 
-# Cek apakah tangan dibalik
-def is_hand_flipped(hand_landmarks):
-    thumb_tip = hand_landmarks.landmark[4]
-    thumb_mcp = hand_landmarks.landmark[2]
-    return abs(thumb_tip.z - thumb_mcp.z) > 0.1 and thumb_tip.z > thumb_mcp.z
-
-# Dapatkan status jari terbuka/tutup
-def get_finger_states(hand_landmarks):
+def get_finger_states(hand_landmarks, handedness):
     finger_states = []
 
-    # Thumb horizontal
-    thumb_tip = hand_landmarks.landmark[4]
-    thumb_ip = hand_landmarks.landmark[3]
-    wrist = hand_landmarks.landmark[0]
-    is_thumb_open = thumb_tip.x < thumb_ip.x if thumb_tip.y < wrist.y else thumb_tip.x > thumb_ip.x
-    finger_states.append(is_thumb_open)
+    # Thumb (horizontal cek arah tangan)
+    if handedness == "Right":
+        thumb_is_open = hand_landmarks.landmark[4].x < hand_landmarks.landmark[3].x
+    else:
+        thumb_is_open = hand_landmarks.landmark[4].x > hand_landmarks.landmark[3].x
+    finger_states.append(thumb_is_open)
 
-    # Fingers vertical
+    # Finger tips vs pip
     tips = [8, 12, 16, 20]
     pip_joints = [6, 10, 14, 18]
     for tip, pip in zip(tips, pip_joints):
-        tip_y = hand_landmarks.landmark[tip].y
-        pip_y = hand_landmarks.landmark[pip].y
-        is_open = tip_y < pip_y
+        is_open = hand_landmarks.landmark[tip].y < hand_landmarks.landmark[pip].y
         finger_states.append(is_open)
 
-    return finger_states  # thumb, index, middle, ring, pinky
+    return finger_states
 
-# Hitung jarak antara dua landmark
 def calculate_distance(p1, p2):
     return math.sqrt((p1.x - p2.x)**2 + (p1.y - p2.y)**2)
 
-# Deteksi gesture berdasarkan jari dan posisi
-def detect_gesture(hand_landmarks, finger_states):
+def detect_gesture(finger_states, hand_landmarks):
     thumb, index, middle, ring, pinky = finger_states
-
-    # Gesture 9: thumb & index berdekatan, middle, ring, pinky terbuka
     thumb_tip = hand_landmarks.landmark[4]
     index_tip = hand_landmarks.landmark[8]
     dist = calculate_distance(thumb_tip, index_tip)
@@ -80,15 +67,20 @@ def detect_gesture(hand_landmarks, finger_states):
     else:
         return None
 
-# Deteksi gesture silang (angka 10)
 def detect_cross_gesture(results):
     if results.multi_hand_landmarks and len(results.multi_hand_landmarks) == 2:
-        l_wrist = results.multi_hand_landmarks[0].landmark[0]
-        r_wrist = results.multi_hand_landmarks[1].landmark[0]
-        dx = abs(l_wrist.x - r_wrist.x)
-        dy = abs(l_wrist.y - r_wrist.y)
+        left_wrist = results.multi_hand_landmarks[0].landmark[0]
+        right_wrist = results.multi_hand_landmarks[1].landmark[0]
+        dx = abs(left_wrist.x - right_wrist.x)
+        dy = abs(left_wrist.y - right_wrist.y)
         if dx < 0.1 and dy < 0.1:
             return "10"
+    return None
+
+def detect_ten_gesture_by_thumb(finger_states):
+    thumb, index, middle, ring, pinky = finger_states
+    if thumb and not index and not middle and not ring and not pinky:
+        return "10"
     return None
 
 # Main loop
@@ -106,36 +98,38 @@ with mp_hands.Hands(
             break
 
         frame = cv2.flip(frame, 1)
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = hands.process(rgb)
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = hands.process(rgb_frame)
 
         detected_gesture = None
-        flip_warning = False
 
-        if results.multi_hand_landmarks:
-            for hand_landmarks in results.multi_hand_landmarks:
-                if is_hand_flipped(hand_landmarks):
-                    flip_warning = True
-                    break
-
+        if results.multi_hand_landmarks and results.multi_handedness:
+            for hand_landmarks, handedness_info in zip(results.multi_hand_landmarks, results.multi_handedness):
                 mp_drawing.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
-                finger_states = get_finger_states(hand_landmarks)
-                gesture = detect_gesture(hand_landmarks, finger_states)
+                handedness = handedness_info.classification[0].label
+
+                finger_states = get_finger_states(hand_landmarks, handedness)
+                gesture = detect_gesture(finger_states, hand_landmarks)
                 if gesture:
                     detected_gesture = gesture
+                else:
+                    # Coba deteksi gesture 10 via kepalan jari dan jempol
+                    gesture = detect_ten_gesture_by_thumb(finger_states)
+                    if gesture:
+                        detected_gesture = gesture
 
-        if not detected_gesture and not flip_warning:
-            detected_gesture = detect_cross_gesture(results)
+        # Jika belum terdeteksi, cek gesture silang tangan untuk angka 10
+        if not detected_gesture:
+            gesture_10 = detect_cross_gesture(results)
+            if gesture_10:
+                detected_gesture = gesture_10
 
-        if flip_warning:
-            cv2.putText(frame, "Tidak bisa membalikkan tangan!", (10, 50),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3)
-        elif detected_gesture:
+        # Tampilkan teks gesture
+        if detected_gesture:
             text = f"{detected_gesture} - {gesture_sibi[detected_gesture]}"
-            cv2.putText(frame, text, (10, 50),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 3)
+            cv2.putText(frame, text, (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 3)
 
-        cv2.imshow("Gesture SIBI", frame)
+        cv2.imshow('Gesture SIBI', frame)
         if cv2.waitKey(1) & 0xFF == 27:
             break
 
